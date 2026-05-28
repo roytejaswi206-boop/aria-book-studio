@@ -1,121 +1,379 @@
-import { useState } from 'react'
-import reactLogo from './assets/react.svg'
-import viteLogo from './assets/vite.svg'
-import heroImg from './assets/hero.png'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import './App.css'
+import Library from './components/Library'
+import BookPreview from './components/BookPreview'
+import ExportPanel from './components/ExportPanel'
+import {
+  cancelJob,
+  createBook,
+  deleteBook,
+  getBook,
+  getBookChapters,
+  getBookChaptersStatus,
+  getBooks,
+  getJobStatus,
+  retryChapter,
+  startJob
+} from './services/api'
+import { downloadText } from './services/exportService'
+
+const MOCK_USER_ID = 'user-12345'
+
+const PHASE_LABELS = {
+  planning: 'Analyzing concept',
+  building_codex: 'Building character codex',
+  front_matter: 'Writing front matter',
+  cover_design: 'Designing cover',
+  writing_chapters: 'Writing chapters',
+  back_matter: 'Writing back matter',
+  complete: 'Complete',
+  error: 'Error'
+}
 
 function App() {
-  const [count, setCount] = useState(0)
+  const [activeBookId, setActiveBookId] = useState(null)
+  const [jobId, setJobId] = useState(null)
+  const [job, setJob] = useState(null)
+  const [book, setBook] = useState(null)
+  const [chapters, setChapters] = useState([])
+  const [chapterStatuses, setChapterStatuses] = useState([])
+  const [books, setBooks] = useState([])
+  const [isGenerating, setIsGenerating] = useState(false)
+  const [libraryLoading, setLibraryLoading] = useState(true)
+  const [debugLogs, setDebugLogs] = useState([])
+  const [showDebug, setShowDebug] = useState(false)
+  const coverRef = useRef(null)
+  const jobPollInterval = useRef(null)
+  const isMounted = useRef(true)
+
+  const appendLog = useCallback((message) => {
+    setDebugLogs((prev) => [...prev.slice(-49), `${new Date().toLocaleTimeString()}: ${message}`])
+  }, [])
+
+  const loadBooks = useCallback(async () => {
+    setLibraryLoading(true)
+    try {
+      const { books: fetched } = await getBooks(MOCK_USER_ID)
+      setBooks(fetched || [])
+      appendLog(`Loaded ${fetched?.length || 0} books`)
+    } catch (err) {
+      console.error('Load books failed', err)
+      appendLog(`Load books failed: ${err.message}`)
+    } finally {
+      setLibraryLoading(false)
+    }
+  }, [appendLog])
+
+  const loadBook = useCallback(async (bookId) => {
+    try {
+      const { book: fetched } = await getBook(bookId)
+      setBook(fetched)
+      setActiveBookId(bookId)
+      try {
+        const { chapters: full } = await getBookChapters(bookId)
+        setChapters(full || [])
+      } catch (chapterErr) {
+        console.error('Load chapters failed', chapterErr)
+        appendLog(`Load chapters failed: ${chapterErr.message}`)
+      }
+      appendLog(`Loaded book ${bookId}`)
+    } catch (err) {
+      console.error('Load book failed', err)
+      appendLog(`Load book failed: ${err.message}`)
+    }
+  }, [appendLog])
+
+  const stopPolling = useCallback(() => {
+    if (jobPollInterval.current) {
+      clearInterval(jobPollInterval.current)
+      jobPollInterval.current = null
+    }
+  }, [])
+
+  const pollStatus = useCallback(async (currentJobId, bookId) => {
+    if (!bookId || !isMounted.current) return
+    try {
+      const tasks = [getBookChaptersStatus(bookId)]
+      if (currentJobId) tasks.push(getJobStatus(currentJobId))
+      const [chapterResponse, jobResponse] = await Promise.all(tasks)
+
+      // Task 6: bail out if the component unmounted while the request was in flight.
+      if (!isMounted.current) return
+
+      setChapterStatuses(chapterResponse.chapters || [])
+      const currentJob = jobResponse?.job || null
+      if (currentJob && isMounted.current) setJob(currentJob)
+
+      const jobDone = currentJob && ['complete', 'error', 'cancelled'].includes(currentJob.status)
+      const chapterList = chapterResponse.chapters || []
+      const allComplete = chapterList.length > 0 && chapterList.every((c) => c.status === 'complete')
+      const hasFailed = chapterList.some((c) => c.status === 'failed')
+
+      if (jobDone || allComplete || hasFailed) {
+        stopPolling()
+        if (isMounted.current) {
+          setIsGenerating(false)
+          localStorage.removeItem(`aria_job_${bookId}`)
+          appendLog(`Generation finished for ${bookId} (status: ${currentJob?.status || (allComplete ? 'complete' : 'failed')})`)
+        }
+        await loadBook(bookId)
+        await loadBooks()
+      }
+    } catch (err) {
+      console.error('Poll status failed', err)
+      if (isMounted.current) appendLog(`Poll status failed: ${err.message}`)
+    }
+  }, [appendLog, loadBook, loadBooks, stopPolling])
+
+  const beginPolling = useCallback((currentJobId, bookId) => {
+    stopPolling()
+    pollStatus(currentJobId, bookId)
+    jobPollInterval.current = setInterval(() => pollStatus(currentJobId, bookId), 3000)
+  }, [pollStatus, stopPolling])
+
+  const createNewBook = useCallback(async () => {
+    const payload = {
+      userId: MOCK_USER_ID,
+      title: 'Untitled ARIA Book',
+      subtitle: 'A modern book generated by ARIA',
+      authorName: 'ARIA Author',
+      language: 'English',
+      genres: ['Fantasy'],
+      tones: ['Cinematic'],
+      writing_styles: ['Conversational'],
+      audience: ['General'],
+      targetPages: 120,
+      cover_skipped: false
+    }
+    try {
+      const { book: created } = await createBook(payload)
+      await loadBooks()
+      await loadBook(created.id)
+      appendLog(`Created book ${created.id}`)
+    } catch (err) {
+      console.error('Create book failed', err)
+      appendLog(`Create book failed: ${err.message}`)
+    }
+  }, [appendLog, loadBook, loadBooks])
+
+  const handleCancelGeneration = useCallback(async () => {
+    if (!jobId) return
+    try {
+      await cancelJob(jobId)
+      stopPolling()
+      setIsGenerating(false)
+      setJob(null)
+      localStorage.removeItem(`aria_job_${activeBookId}`)
+      appendLog(`Cancelled generation job ${jobId}`)
+    } catch (err) {
+      console.error('Cancel generation failed', err)
+      appendLog(`Cancel failed: ${err.message}`)
+    }
+  }, [jobId, activeBookId, appendLog, stopPolling])
+
+  const startGeneration = useCallback(async () => {
+    if (!book) return
+    try {
+      setIsGenerating(true)
+      setJob(null)
+      appendLog('Starting generation job')
+      const { jobId: newJobId } = await startJob({ bookId: book.id, userId: MOCK_USER_ID, bookData: book })
+      localStorage.setItem(`aria_job_${book.id}`, newJobId)
+      setJobId(newJobId)
+      beginPolling(newJobId, book.id)
+      appendLog(`Generation job started: ${newJobId}`)
+    } catch (err) {
+      console.error('Start generation failed', err)
+      appendLog(`Start generation failed: ${err.message}`)
+      setIsGenerating(false)
+    }
+  }, [appendLog, beginPolling, book])
+
+  const handleDeleteBook = useCallback(async (bookId) => {
+    if (!window.confirm('Delete this book and all its chapters? This cannot be undone.')) return
+    try {
+      await deleteBook(bookId)
+      appendLog(`Deleted book ${bookId}`)
+      if (activeBookId === bookId) {
+        setBook(null)
+        setActiveBookId(null)
+        setChapters([])
+        localStorage.removeItem('activeBookId')
+      }
+      await loadBooks()
+    } catch (err) {
+      console.error('Delete book failed', err)
+      appendLog(`Delete book failed: ${err.message}`)
+    }
+  }, [activeBookId, appendLog, loadBooks])
+
+  const handleExportBook = useCallback(async (targetBook) => {
+    try {
+      const { chapters: full } = await getBookChapters(targetBook.id)
+      const fileName = targetBook.title?.replace(/[^a-zA-Z0-9_-]/g, '_') || 'aria-book'
+      downloadText({ ...targetBook, chapters: full || [] }, fileName)
+      appendLog(`Exported ${targetBook.title} as TXT`)
+    } catch (err) {
+      console.error('Export failed', err)
+      appendLog(`Export failed: ${err.message}`)
+    }
+  }, [appendLog])
+
+  useEffect(() => {
+    // Defer initial loads out of the effect body so the synchronous setState
+    // inside loadBooks() doesn't trigger a cascading render warning.
+    queueMicrotask(() => {
+      loadBooks()
+      const storedBook = localStorage.getItem('activeBookId')
+      if (storedBook) {
+        loadBook(storedBook)
+        const storedJobId = localStorage.getItem(`aria_job_${storedBook}`)
+        if (storedJobId) {
+          setJobId(storedJobId)
+          setIsGenerating(true)
+          beginPolling(storedJobId, storedBook)
+        }
+      }
+    })
+    // Cleanup: stop polling and mark component as unmounted
+    return () => {
+      isMounted.current = false
+      stopPolling()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  useEffect(() => {
+    if (activeBookId) {
+      localStorage.setItem('activeBookId', activeBookId)
+    }
+  }, [activeBookId])
+
+  useEffect(() => {
+    const handler = (e) => {
+      if (e.ctrlKey && e.shiftKey && (e.key === 'D' || e.key === 'd')) {
+        e.preventDefault()
+        setShowDebug((prev) => !prev)
+      }
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [])
+
+  const totalChapters = job?.total_chapters || chapterStatuses.length || 0
+  const completedChapters = chapterStatuses.filter((c) => c.status === 'complete').length
+  const percent = totalChapters > 0 ? Math.round((completedChapters / totalChapters) * 100) : 0
+  const phaseLabel = job ? (PHASE_LABELS[job.phase] || job.phase || 'Working') : 'Starting'
 
   return (
-    <>
-      <section id="center">
-        <div className="hero">
-          <img src={heroImg} className="base" width="170" height="179" alt="" />
-          <img src={reactLogo} className="framework" alt="React logo" />
-          <img src={viteLogo} className="vite" alt="Vite logo" />
-        </div>
-        <div>
-          <h1>Get started</h1>
-          <p>
-            Edit <code>src/App.jsx</code> and save to test <code>HMR</code>
-          </p>
-        </div>
-        <button
-          type="button"
-          className="counter"
-          onClick={() => setCount((count) => count + 1)}
-        >
-          Count is {count}
+    <div className="app-shell">
+      <aside className="sidebar">
+        <div className="brand">ARIA Book Studio</div>
+        <button type="button" className="primary-button sidebar-action" onClick={createNewBook}>
+          New Book
         </button>
-      </section>
+        <Library
+          books={books}
+          loading={libraryLoading}
+          onCreateBook={createNewBook}
+          onSelectBook={loadBook}
+          onDeleteBook={handleDeleteBook}
+          onExportBook={handleExportBook}
+        />
+      </aside>
 
-      <div className="ticks"></div>
-
-      <section id="next-steps">
-        <div id="docs">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#documentation-icon"></use>
-          </svg>
-          <h2>Documentation</h2>
-          <p>Your questions, answered</p>
-          <ul>
-            <li>
-              <a href="https://vite.dev/" target="_blank">
-                <img className="logo" src={viteLogo} alt="" />
-                Explore Vite
-              </a>
-            </li>
-            <li>
-              <a href="https://react.dev/" target="_blank">
-                <img className="button-icon" src={reactLogo} alt="" />
-                Learn more
-              </a>
-            </li>
-          </ul>
+      <main className="workspace">
+        <div className="workspace-topbar">
+          <div>
+            <p className="eyebrow">Workspace</p>
+            <h1>{book?.title || 'Create a book to begin'}</h1>
+            <p className="subheadline">{book?.subtitle || 'Start by creating a book and then generate chapters in the background.'}</p>
+          </div>
+          <button type="button" className="primary-button" disabled={!book || isGenerating} onClick={startGeneration}>
+            {isGenerating ? 'Generating…' : 'Generate Chapters'}
+          </button>
         </div>
-        <div id="social">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#social-icon"></use>
-          </svg>
-          <h2>Connect with us</h2>
-          <p>Join the Vite community</p>
-          <ul>
-            <li>
-              <a href="https://github.com/vitejs/vite" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#github-icon"></use>
-                </svg>
-                GitHub
-              </a>
-            </li>
-            <li>
-              <a href="https://chat.vite.dev/" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#discord-icon"></use>
-                </svg>
-                Discord
-              </a>
-            </li>
-            <li>
-              <a href="https://x.com/vite_js" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#x-icon"></use>
-                </svg>
-                X.com
-              </a>
-            </li>
-            <li>
-              <a href="https://bsky.app/profile/vite.dev" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#bluesky-icon"></use>
-                </svg>
-                Bluesky
-              </a>
-            </li>
-          </ul>
-        </div>
-      </section>
 
-      <div className="ticks"></div>
-      <section id="spacer"></section>
-    </>
+        {isGenerating && (
+          <div className="generation-progress">
+            <div className="progress-head">
+              <strong>ARIA is writing your book</strong>
+              <span>{phaseLabel}</span>
+            </div>
+            <div className="track"><div className="fill" style={{ width: `${percent}%` }} /></div>
+            <div className="progress-meta">
+              {completedChapters}/{totalChapters || '?'} chapters • {percent}%
+              {job?.current_chapter_title ? ` • ${job.current_chapter_title}` : ''}
+            </div>
+            <div className="progress-actions">
+              <button type="button" className="secondary-button" onClick={handleCancelGeneration}>
+                Cancel Generation
+              </button>
+            </div>
+            <p className="progress-note">You can navigate away — generation continues in the background.</p>
+          </div>
+        )}
+
+        <div className="workspace-grid">
+          <div className="workspace-panel">
+            <BookPreview book={book ? { ...book, chapters } : null} />
+            <ExportPanel book={book ? { ...book, chapters } : null} coverRef={coverRef} />
+          </div>
+        </div>
+      </main>
+
+      {showDebug && (
+        <aside className="debug-panel">
+          <div className="debug-head">
+            <h2>Debug Panel</h2>
+            <button type="button" onClick={() => setShowDebug(false)}>×</button>
+          </div>
+          <div className="debug-section">
+            <strong>Active job</strong>
+            <div className="debug-log">
+              {job ? (
+                <>
+                  <div>id: {jobId}</div>
+                  <div>status: {job.status}</div>
+                  <div>phase: {job.phase}</div>
+                  <div>chapters: {job.completed_chapters}/{job.total_chapters}</div>
+                  {job.error_log ? <div>error: {job.error_log}</div> : null}
+                </>
+              ) : <div>No active job.</div>}
+            </div>
+          </div>
+          {job?.metrics && (
+            <div className="debug-section">
+              <strong>Generation metrics</strong>
+              <div className="debug-log">
+                <div>elapsed: {Math.round(job.metrics.elapsedMs / 1000)}s</div>
+                <div>input tokens: {job.metrics.inputTokens?.toLocaleString()}</div>
+                <div>output tokens: {job.metrics.outputTokens?.toLocaleString()}</div>
+                <div>cache read tokens: {job.metrics.cacheReadTokens?.toLocaleString()}</div>
+                <div>chapters written: {job.metrics.chaptersWritten}</div>
+                {job.metrics.msPerChapter ? (
+                  <div>time/chapter: {job.metrics.msPerChapter.toLocaleString()}ms</div>
+                ) : null}
+              </div>
+            </div>
+          )}
+          <div className="debug-section">
+            <strong>Chapter statuses</strong>
+            <div className="debug-log">
+              {chapterStatuses.length === 0 ? <div>None.</div> : chapterStatuses.map((c) => (
+                <div key={c.chapter_number}>#{c.chapter_number} {c.status} ({c.word_count || 0}w)</div>
+              ))}
+            </div>
+          </div>
+          <div className="debug-section">
+            <strong>Event log</strong>
+            <div className="debug-log">
+              {debugLogs.length === 0 ? <div>No debug activity yet.</div> : debugLogs.map((line, index) => <div key={index}>{line}</div>)}
+            </div>
+          </div>
+        </aside>
+      )}
+    </div>
   )
 }
 
