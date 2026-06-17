@@ -1,0 +1,37 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Semantic version, for example v1.2.3
+        required: true
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generate changelog
+        run: |
+          echo "# Release ${{ inputs.version }}" > RELEASE_NOTES.md
+          echo "" >> RELEASE_NOTES.md
+          git log --oneline -20 >> RELEASE_NOTES.md
+
+      - name: Create tag
+        run: |
+          git config user.name "aria-release-bot"
+          git config user.email "release@aria.local"
+          git tag -a "${{ inputs.version }}" -m "Release ${{ inputs.version }}"
+
+      - name: Upload release notes artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-notes
+          path: RELEASE_NOTES.md
+

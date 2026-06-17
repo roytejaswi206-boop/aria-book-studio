@@ -1,0 +1,56 @@
+services:
+  backend:
+    build: .
+    command: node server.js
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: development
+      PORT: 3001
+      REDIS_URL: redis://redis:6379
+    ports:
+      - "3001:3001"
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      - redis
+
+  frontend:
+    build: .
+    command: node server.js
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: development
+      PORT: 3002
+    ports:
+      - "3002:3002"
+    volumes:
+      - ./data:/app/data
+
+  workers:
+    build: .
+    command: node server.js
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: worker
+      PORT: 3003
+      REDIS_URL: redis://redis:6379
+    ports:
+      - "3003:3003"
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      - redis
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+
+volumes:
+  redis-data:
+

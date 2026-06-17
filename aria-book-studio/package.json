@@ -1,0 +1,22 @@
+{
+  "name": "aria-book-studio",
+  "version": "1.0.0",
+  "description": "ARIA Book Studio - autonomous AI book creation workspace",
+  "main": "server.js",
+  "scripts": {
+    "dev": "node server.js",
+    "start": "node server.js",
+    "build": "node scripts/validate.js build",
+    "lint": "node scripts/validate.js lint",
+    "typecheck": "node scripts/validate.js typecheck",
+    "test": "node scripts/validate.js test"
+  },
+  "keywords": [
+    "book",
+    "writing",
+    "publishing",
+    "ai"
+  ],
+  "author": "ARIA",
+  "license": "MIT"
+}
