@@ -1,0 +1,3 @@
+Warning: Supabase environment variables are not fully configured.
+Warning: Anthropic environment variable is not set. Mock AI fallback is available.
+Using in-memory fallback for Supabase (local test mode)
