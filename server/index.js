@@ -15,7 +15,8 @@ import {
 
 dotenv.config()
 
-const PORT = process.env.PORT || 3001
+const PORT = process.env.PORT || 5000
+const CLIENT_ORIGIN = process.env.CLIENT_ORIGIN || 'http://localhost:5173'
 const SUPABASE_URL = process.env.SUPABASE_URL
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY
@@ -88,7 +89,15 @@ const anthropic = new Anthropic({ apiKey: ANTHROPIC_API_KEY || '' })
 const activeJobs = new Map()
 
 const app = express()
-app.use(cors({ origin: 'http://localhost:5173' }))
+const allowedOrigins = CLIENT_ORIGIN.split(',').map((origin) => origin.trim()).filter(Boolean)
+app.use(cors({
+  origin(origin, callback) {
+    if (!origin || allowedOrigins.includes(origin)) {
+      return callback(null, true)
+    }
+    return callback(new Error('Not allowed by CORS'))
+  }
+}))
 app.use(express.json())
 
 app.get('/health', (req, res) => {
@@ -835,6 +844,6 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-app.listen(PORT, () => {
-  console.log(`ARIA server running on http://localhost:${PORT}`)
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`ARIA server running on http://0.0.0.0:${PORT}`)
 })

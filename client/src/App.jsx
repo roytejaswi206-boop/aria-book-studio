@@ -12,7 +12,6 @@ import {
   getBookChaptersStatus,
   getBooks,
   getJobStatus,
-  retryChapter,
   startJob
 } from './services/api'
 import { downloadText } from './services/exportService'

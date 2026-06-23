@@ -1,8 +1,0 @@
-
-> dev:client
-> npm run dev --prefix client
-
-
-> client@0.0.0 dev
-> vite
-
