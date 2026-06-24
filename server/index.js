@@ -34,7 +34,7 @@ if (SUPABASE_URL && SUPABASE_SERVICE_KEY) {
 } else {
   // Lightweight in-memory fallback for local testing when Supabase isn't configured.
   console.warn('Using in-memory fallback for Supabase (local test mode)')
-  const db = { books: new Map(), chapters: new Map(), generation_jobs: new Map() }
+  const db = { books: new Map(), chapters: new Map(), generation_jobs: new Map(), exports: new Map() }
   const tableFor = (name) => db[name] || (db[name] = new Map())
 
   const makeResponse = (data) => ({ data, error: null })
@@ -120,10 +120,29 @@ app.use(cors(corsOptions))
 app.options('*', cors(corsOptions))
 app.use(express.json({ limit: '2mb' }))
 
-app.get('/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() })
-})
 
+app.get('/api/diagnostics/database', async (req, res) => {
+  const requiredTables = ['books', 'chapters', 'generation_jobs', 'exports']
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
+    return res.json({
+      ok: true,
+      mode: 'memory',
+      message: 'Supabase is not configured; using local in-memory fallback.'
+    })
+  }
+
+  const checks = await Promise.all(requiredTables.map(async (table) => {
+    const { error } = await supabase.from(table).select('id', { head: true, count: 'exact' }).limit(1)
+    return { table, ok: !error, error: error?.message || null }
+  }))
+  const ok = checks.every((check) => check.ok)
+  res.status(ok ? 200 : 503).json({
+    ok,
+    mode: 'supabase',
+    checks,
+    hint: ok ? null : 'Run schema.sql in the Supabase SQL Editor for the configured project.'
+  })
+})
 app.post('/api/books', async (req, res) => {
   try {
     const payload = req.body
