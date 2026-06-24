@@ -70,6 +70,20 @@ create table if not exists generation_jobs (
   updated_at timestamptz default now()
 );
 
+
+-- Exports ----------------------------------------------------------------
+create table if not exists exports (
+  id uuid primary key default gen_random_uuid(),
+  book_id uuid references books(id) on delete cascade,
+  user_id text,
+  format text not null,
+  file_name text,
+  status text default 'created',
+  metadata jsonb default '{}'::jsonb,
+  created_at timestamptz default now()
+);
 create index if not exists idx_books_user on books (user_id);
 create index if not exists idx_chapters_book on chapters (book_id);
 create index if not exists idx_jobs_user on generation_jobs (user_id);
+create index if not exists idx_exports_book on exports (book_id);
+create index if not exists idx_exports_user on exports (user_id);

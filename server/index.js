@@ -89,16 +89,36 @@ const anthropic = new Anthropic({ apiKey: ANTHROPIC_API_KEY || '' })
 const activeJobs = new Map()
 
 const app = express()
-const allowedOrigins = CLIENT_ORIGIN.split(',').map((origin) => origin.trim()).filter(Boolean)
-app.use(cors({
+const configuredOrigins = CLIENT_ORIGIN.split(',').map((origin) => origin.trim()).filter(Boolean)
+const defaultOrigins = [
+  'http://localhost:5173',
+  'http://127.0.0.1:5173',
+  'https://aria-book-studio-v2.vercel.app'
+]
+const allowedOrigins = new Set([...defaultOrigins, ...configuredOrigins])
+const isVercelOrigin = (origin) => {
+  try {
+    const { protocol, hostname } = new URL(origin)
+    return protocol === 'https:' && (hostname === 'vercel.app' || hostname.endsWith('.vercel.app'))
+  } catch {
+    return false
+  }
+}
+const corsOptions = {
   origin(origin, callback) {
-    if (!origin || allowedOrigins.includes(origin)) {
+    if (!origin || allowedOrigins.has(origin) || isVercelOrigin(origin)) {
       return callback(null, true)
     }
-    return callback(new Error('Not allowed by CORS'))
-  }
-}))
-app.use(express.json())
+    return callback(null, false)
+  },
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+  optionsSuccessStatus: 204,
+  maxAge: 86400
+}
+app.use(cors(corsOptions))
+app.options('*', cors(corsOptions))
+app.use(express.json({ limit: '2mb' }))
 
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() })
